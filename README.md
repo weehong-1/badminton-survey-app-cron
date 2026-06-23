@@ -12,8 +12,11 @@ All sensitive details live in `.env` (git-ignored). See `.env.example`.
 
 ```
 app/config.py           # loads secrets from .env / env vars
+app/game_post_form.py   # /post form state and create-game payload rendering
 app/telegram_sender.py  # Bot API send logic (httpx -> api.telegram.org)
 app/telegram_welcome.py # builds the welcome message for new group members
+app/upmatches_api.py    # Upmatches API client for /post game creation
+app/venue_matcher.py    # venue text matching using OpenAI + venue records
 app/youform.py          # fetches the live survey submission count
 app/main.py             # FastAPI app + POST /telegram/send + POST /telegram/webhook
 set_webhook.py          # one-time helper to register/delete the Telegram webhook
@@ -54,6 +57,14 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"   # -> CRON_SECRET
 | `YOUFORM_API_TOKEN` | fetches the live submission count appended to messages |
 | `TELEGRAM_WEBHOOK_SECRET` | secret for `/telegram/webhook` (welcome-on-join); empty disables it |
 | `TELEGRAM_WELCOME_MESSAGE` | *(optional)* override the built-in welcome text; `{name}` = mention |
+| `TELEGRAM_HUB_GROUP` | group where `/post` publishes created games, e.g. `@upmatcheshub` |
+| `TELEGRAM_GAME_POST_TOPIC_ID` | topic id for `Organizers & Find Players` |
+| `UPMATCHES_API_BASE_URL` | Upmatches API base URL, default `https://api.upmatches.com` |
+| `UPMATCHES_BOT_SERVICE_CLIENT_ID` | bot service-client id for creating games |
+| `UPMATCHES_BOT_SERVICE_CLIENT_SECRET` | bot service-client secret |
+| `UPMATCHES_BOT_SERVICE_TOTP_SECRET` | bot service-client TOTP secret |
+| `OPENAI_API_KEY` | optional but recommended for AI venue matching |
+| `OPENAI_VENUE_MATCH_MODEL` | model used to rank venue matches |
 
 ## 3. Install
 
@@ -278,6 +289,14 @@ Linking a discussion group is reliable in the Telegram apps but flaky on
 - Each non-bot in a join event gets one welcome; bots (including this one being
   added) are skipped. The route always returns `200` so Telegram does not retry
   and re-welcome.
+- Organizers can send `/post` in the group to start a guided game-creation form.
+  The bot matches their free-text venue against live Upmatches venues, asks them
+  to pick one of the top matches, collects the Create Game fields, previews the
+  payload, then creates the game after they reply `confirm`.
+- `/post` needs `UPMATCHES_BOT_SERVICE_CLIENT_ID`,
+  `UPMATCHES_BOT_SERVICE_CLIENT_SECRET`, and
+  `UPMATCHES_BOT_SERVICE_TOTP_SECRET` to create the game. Without
+  `OPENAI_API_KEY`, venue matching falls back to deterministic text matching.
 - The welcome **auto-deletes after `TELEGRAM_WELCOME_TTL_SECONDS` (default 60)**
   so it doesn't clutter the group — the joiner still gets the notification. The
   delete runs as a background task, so the webhook still returns immediately. A

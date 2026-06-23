@@ -19,6 +19,8 @@ async def send_chat_message(
     chat_id: str | int,
     text: str,
     parse_mode: str | None = None,
+    message_thread_id: int | None = None,
+    disable_web_page_preview: bool = True,
 ) -> dict:
     """Send `text` to `chat_id` using the Telegram Bot API.
 
@@ -35,10 +37,12 @@ async def send_chat_message(
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "disable_web_page_preview": True,
+        "disable_web_page_preview": disable_web_page_preview,
     }
     if parse_mode:
         payload["parse_mode"] = parse_mode
+    if message_thread_id is not None:
+        payload["message_thread_id"] = message_thread_id
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:

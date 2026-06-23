@@ -8,6 +8,7 @@ bruno/environments/
 __pycache__/
 *.py[cod]
 .venv/
+.browser-use-venv/
 venv/
 env/
 *.egg-info/

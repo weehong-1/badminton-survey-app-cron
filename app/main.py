@@ -10,6 +10,18 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
+from app.game_post_form import (
+    DEFAULT_SKILL_LEVELS,
+    GamePostFormError,
+    GamePostSession,
+    build_game_payload,
+    current_prompt,
+    format_created_post,
+    record_answer,
+    select_venue,
+    set_venue_matches,
+    start_game_post_session,
+)
 from app.telegram_sender import (
     TelegramSendError,
     delete_chat_message,
@@ -17,6 +29,8 @@ from app.telegram_sender import (
     send_message,
 )
 from app.telegram_welcome import build_welcome
+from app.upmatches_api import UpmatchesApiClient, UpmatchesApiError
+from app.venue_matcher import VenueMatchError, match_venues
 from app.youform import YouformError, get_submission_count
 
 logging.basicConfig(level=logging.INFO)
@@ -27,6 +41,195 @@ app = FastAPI(title="Badminton Telegram Cron")
 # Keep strong references to in-flight delete tasks so the event loop does not
 # garbage-collect them before they run; they remove themselves when done.
 _pending_deletes: set[asyncio.Task] = set()
+_game_post_sessions: dict[tuple[int, int], GamePostSession] = {}
+
+
+def _message_thread_id(message: dict) -> int | None:
+    thread_id = message.get("message_thread_id")
+    return thread_id if isinstance(thread_id, int) else None
+
+
+def _telegram_name(user: dict) -> str:
+    if user.get("username"):
+        return f"@{user['username']}"
+
+    name_parts = [
+        user.get("first_name") or "",
+        user.get("last_name") or "",
+    ]
+    return " ".join(part for part in name_parts if part).strip() or "Organizer"
+
+
+async def _send_game_form_prompt(
+    chat_id: int,
+    text: str,
+    message_thread_id: int | None,
+) -> None:
+    await send_chat_message(
+        chat_id,
+        text,
+        message_thread_id=message_thread_id,
+    )
+
+
+async def _handle_game_post_form(message: dict, settings: Settings) -> None:
+    text = (message.get("text") or "").strip()
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
+    sender = message.get("from") or {}
+    user_id = sender.get("id")
+    thread_id = _message_thread_id(message)
+
+    if not text or chat_id is None or user_id is None or sender.get("is_bot"):
+        return
+
+    session_key = (chat_id, user_id)
+    command = text.split()[0].split("@")[0].lower()
+
+    if command == "/cancel" and session_key in _game_post_sessions:
+        _game_post_sessions.pop(session_key, None)
+        await _send_game_form_prompt(chat_id, "Game post form cancelled.", thread_id)
+        return
+
+    if command == "/post":
+        session = start_game_post_session(_telegram_name(sender))
+        _game_post_sessions[session_key] = session
+        await _send_game_form_prompt(
+            chat_id,
+            "🏸 Game post form started.\n"
+            "Answer each question in a new message. Send `/cancel` anytime to stop.\n\n"
+            f"{current_prompt(session)}",
+            thread_id,
+        )
+        return
+
+    session = _game_post_sessions.get(session_key)
+    if session is None:
+        return
+
+    api = UpmatchesApiClient()
+
+    if session.state == "venue":
+        await _handle_venue_answer(session, text, chat_id, thread_id, api)
+        return
+
+    if session.state == "venue_choice":
+        try:
+            select_venue(session, text)
+        except GamePostFormError as exc:
+            await _send_game_form_prompt(chat_id, str(exc), thread_id)
+            await _send_game_form_prompt(chat_id, current_prompt(session), thread_id)
+            return
+        await _send_game_form_prompt(chat_id, current_prompt(session), thread_id)
+        return
+
+    if session.state == "confirm":
+        await _handle_confirmation(
+            session_key,
+            session,
+            text,
+            chat_id,
+            thread_id,
+            settings,
+            api,
+        )
+        return
+
+    try:
+        skill_levels = await _skill_levels(api)
+        record_answer(session, text, skill_levels)
+    except (GamePostFormError, UpmatchesApiError) as exc:
+        await _send_game_form_prompt(chat_id, str(exc), thread_id)
+        await _send_game_form_prompt(chat_id, current_prompt(session), thread_id)
+        return
+
+    await _send_game_form_prompt(chat_id, current_prompt(session), thread_id)
+
+
+async def _handle_venue_answer(
+    session: GamePostSession,
+    text: str,
+    chat_id: int,
+    thread_id: int | None,
+    api: UpmatchesApiClient,
+) -> None:
+    try:
+        venues = await api.list_venues()
+        matches = await match_venues(text, venues)
+    except (UpmatchesApiError, VenueMatchError) as exc:
+        logger.warning("Venue matching failed: %s", exc)
+        await _send_game_form_prompt(
+            chat_id,
+            "I could not search venues right now. Please try again later.",
+            thread_id,
+        )
+        return
+
+    set_venue_matches(session, text, matches)
+    await _send_game_form_prompt(chat_id, current_prompt(session), thread_id)
+
+
+async def _skill_levels(api: UpmatchesApiClient) -> list[dict]:
+    try:
+        levels = await api.list_skill_levels()
+    except UpmatchesApiError as exc:
+        logger.warning("Could not fetch skill levels; using fallback labels: %s", exc)
+        return list(DEFAULT_SKILL_LEVELS)
+    return levels or list(DEFAULT_SKILL_LEVELS)
+
+
+async def _handle_confirmation(
+    session_key: tuple[int, int],
+    session: GamePostSession,
+    text: str,
+    chat_id: int,
+    thread_id: int | None,
+    settings: Settings,
+    api: UpmatchesApiClient,
+) -> None:
+    normalized = text.strip().lower()
+    if normalized not in {"confirm", "yes", "y"}:
+        await _send_game_form_prompt(
+            chat_id,
+            "Reply `confirm` to create this game, or `/cancel` to stop.",
+            thread_id,
+        )
+        return
+
+    try:
+        payload = build_game_payload(session)
+        game = await api.create_game(payload)
+        game_id = str(game.get("id") or "")
+        share_link = {}
+        if game_id:
+            try:
+                share_link = await api.create_share_link(game_id)
+            except UpmatchesApiError as exc:
+                logger.warning("Game created but share-link creation failed: %s", exc)
+        share_url = api.game_url(game, share_link)
+        post = format_created_post(session, share_url)
+        result = await send_chat_message(
+            settings.telegram_hub_group,
+            post,
+            message_thread_id=settings.telegram_game_post_topic_id,
+            disable_web_page_preview=False,
+        )
+    except (GamePostFormError, UpmatchesApiError, TelegramSendError) as exc:
+        logger.error("Failed to create game from /post form: %s", exc)
+        await _send_game_form_prompt(
+            chat_id,
+            "I could not create the game. Please check the details or try again later.",
+            thread_id,
+        )
+        return
+
+    _game_post_sessions.pop(session_key, None)
+    await _send_game_form_prompt(
+        chat_id,
+        "Game created and posted to Organizers & Find Players. "
+        f"Message ID: {result['message_id']}",
+        thread_id,
+    )
 
 
 async def _delete_after(chat_id: int, message_id: int, delay: int) -> None:
@@ -36,6 +239,7 @@ async def _delete_after(chat_id: int, message_id: int, delay: int) -> None:
         await delete_chat_message(chat_id, message_id)
     except TelegramSendError as exc:
         logger.warning("Could not delete welcome message %s: %s", message_id, exc)
+
 
 SURVEY_MESSAGE_TEMPLATES = (
     """Hi badminton organisers,
@@ -208,6 +412,8 @@ async def telegram_webhook(
             )
             _pending_deletes.add(task)
             task.add_done_callback(_pending_deletes.discard)
+
+    await _handle_game_post_form(message, settings)
 
     return {"ok": True}
 

@@ -33,6 +33,23 @@ class Settings(BaseSettings):
     # A bot may delete its own messages without admin rights, within 48 hours.
     telegram_welcome_ttl_seconds: int = 60
 
+    # Group/topic where completed organizer game posts are published.
+    telegram_hub_group: str = "@upmatcheshub"
+    telegram_game_post_topic_id: int = 5
+
+    # Upmatches API access for creating games from the Telegram `/post` form.
+    upmatches_api_base_url: str = "https://api.upmatches.com"
+    upmatches_bot_service_client_id: str = ""
+    upmatches_bot_service_client_secret: str = ""
+    upmatches_bot_service_totp_secret: str = ""
+    upmatches_venue_cache_seconds: int = 3600
+
+    # OpenAI structured output venue matcher. If the key is unset, the bot falls
+    # back to deterministic text matching and still asks the organizer to confirm.
+    openai_api_key: str = ""
+    openai_venue_match_model: str = "gpt-4o-mini"
+    openai_venue_candidate_limit: int = 30
+
     # YouForm survey whose submission count is appended to outgoing messages.
     youform_api_token: str
     youform_form_id: str = "idbukum2"
