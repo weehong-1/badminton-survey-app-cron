@@ -1,0 +1,23 @@
+meta {
+  name: Telegram Send (Default Message)
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{BASE_URL}}/telegram/send
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{cronSecret}}
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Telegram Send
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{BASE_URL}}/telegram/send
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{cronSecret}}
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "message": "Hi Organisers! 👋\n\nWe are the team behind Upmatches, and we'd love your help with a very quick survey (just 4-6 questions). Your feedback will help us build a tailor-made app designed specifically to solve your pain points!\n\n🔗 Link: https://app.youform.com/forms/idbukum2\n(Rest assured, this link is safe and secure.)\n\n📊 **{count}** organisers have responded so far — thank you!\n⏰ Survey closes **30 June 2026, 23:59:59** — we can't wait to hear what you need and build the tools that make organising your games effortless! 💪\n\nTo the admins: If this post isn't allowed, please feel free to drop me a DM.\n\nThank you so much! 🙏\n"
+  }
+}

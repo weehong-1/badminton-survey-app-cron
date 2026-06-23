@@ -1,0 +1,14 @@
+# Secrets and runtime config
+.env
+
+# Bruno environments hold the CRON_SECRET — keep out of git
+bruno/environments/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
